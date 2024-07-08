@@ -3,6 +3,7 @@ import uuid
 import os
 import subprocess
 import zipfile
+import venv
 
 REGION = 'eu-north-1'
 
@@ -43,9 +44,9 @@ def zip_lambda_function(source_dir, output_filename, dependencies_dir):
                 zf.write(file_path, arcname)
 
 def install_dependencies(target_dir):
-    subprocess.check_call([
-        'pip', 'install', '--upgrade', 'retry', '--target', target_dir
-    ])
+    venv.create(target_dir, with_pip=True)
+    venv_bin = os.path.join(target_dir, 'Scripts', 'pip') if os.name == 'nt' else os.path.join(target_dir, 'bin', 'pip')
+    subprocess.check_call([venv_bin, 'install', '--upgrade', 'retry'])
 
 def upload_to_s3(file_name, bucket, object_name=None):
     s3_client = boto3.client('s3')
