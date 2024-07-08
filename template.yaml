@@ -1,0 +1,638 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Deploy Messaging System Lambda functions
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: The name of the S3 bucket for Lambda functions
+  RegisterUserFunctionZipKey:
+    Type: String
+    Description: The S3 key for the RegisterUser function ZIP file
+  SendMessageFunctionZipKey:
+    Type: String
+    Description: The S3 key for the SendMessage function ZIP file
+  ProcessUserMessageFunctionZipKey:
+    Type: String
+    Description: The S3 key for the ProcessUser function ZIP file
+  SendGroupMessageFunctionZipKey:
+    Type: String
+    Description: The S3 key for the SendGroup function ZIP file
+  ProcessGroupMessageFunctionZipKey:
+    Type: String
+    Description: The S3 key for the ProcessGroup function ZIP file
+  BlockUserFunctionZipKey:
+    Type: String
+    Description: The S3 key for the BlockUser function ZIP file
+  CreateGroupFunctionZipKey:
+    Type: String
+    Description: The S3 key for the CreateGroup function ZIP file
+  AddUserToGroupFunctionZipKey:
+    Type: String
+    Description: The S3 key for the AddUserToGroup function ZIP file
+  GetAllMessagesFunctionZipKey:
+    Type: String
+    Description: The S3 key for the GetAllMessages function ZIP file
+  GetNewMessagesFunctionZipKey:
+    Type: String
+    Description: The S3 key for the GetNewMessages function ZIP file
+  RemoveUserFromGroupFunctionZipKey:
+    Type: String
+    Description: The S3 key for the RemoveUserFromGroup function ZIP file
+
+Resources:
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'Users'
+      AttributeDefinitions:
+        - AttributeName: 'user_id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'user_id'
+          KeyType: 'HASH'
+      BillingMode: PAY_PER_REQUEST
+
+  MessagesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'Messages'
+      AttributeDefinitions:
+        - AttributeName: 'message_id'
+          AttributeType: 'S'
+        - AttributeName: 'user_id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'message_id'
+          KeyType: 'HASH'
+      GlobalSecondaryIndexes:
+        - IndexName: UserMessagesIndex
+          KeySchema:
+            - AttributeName: 'user_id'
+              KeyType: 'HASH'
+            - AttributeName: 'message_id'
+              KeyType: 'RANGE'
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+
+  GroupsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'Groups'
+      AttributeDefinitions:
+        - AttributeName: 'group_id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'group_id'
+          KeyType: 'HASH'
+      BillingMode: PAY_PER_REQUEST
+
+  BlocksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'Blocks'
+      AttributeDefinitions:
+        - AttributeName: 'user_id'
+          AttributeType: 'S'
+        - AttributeName: 'blocked_user_id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'user_id'
+          KeyType: 'HASH'
+      GlobalSecondaryIndexes:
+        - IndexName: 'BlockedUserIndex'
+          KeySchema:
+            - AttributeName: 'blocked_user_id'
+              KeyType: 'HASH'
+            - AttributeName: 'user_id'
+              KeyType: 'RANGE'
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+
+  UserMessageQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'UserMessageQueue'
+      VisibilityTimeout: 60
+  
+  GroupMessageQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: 'GroupMessageQueue'
+      VisibilityTimeout: 60
+
+  RegisterUserFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RegisterUserPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:PutItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt UsersTable.Arn
+
+  RegisterUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref RegisterUserFunctionZipKey
+      Role: !GetAtt RegisterUserFunctionRole.Arn
+      Events:
+        RegisterUserApi:
+          Type: Api
+          Properties:
+            Path: /register
+            Method: post
+
+  SendMessageFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SendMessagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - sqs:SendMessage
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt UserMessageQueue.Arn
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt BlocksTable.Arn
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${BlocksTable}/index/BlockedUserIndex"
+
+  SendMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref SendMessageFunctionZipKey
+      Role: !GetAtt SendMessageFunctionRole.Arn
+      Environment:
+        Variables:
+          QUEUE_URL: !GetAtt UserMessageQueue.QueueUrl
+      Events:
+        SendMessageApi:
+          Type: Api
+          Properties:
+            Path: /send-message
+            Method: post
+
+  ProcessUserMessageFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ProcessUserMessagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt MessagesTable.Arn
+                  - !GetAtt BlocksTable.Arn
+                  - !GetAtt UserMessageQueue.Arn
+                  - !GetAtt UsersTable.Arn
+
+  ProcessUserMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref ProcessUserMessageFunctionZipKey
+      Role: !GetAtt ProcessUserMessageFunctionRole.Arn
+      Events:
+        UserMessageQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt UserMessageQueue.Arn
+
+  SendGroupMessageFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SendGroupMessagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - sqs:SendMessage
+                  - dynamodb:GetItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt GroupMessageQueue.Arn
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt GroupsTable.Arn
+
+  SendGroupMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref SendGroupMessageFunctionZipKey
+      Role: !GetAtt SendGroupMessageFunctionRole.Arn
+      Environment:
+        Variables:
+          QUEUE_URL: !GetAtt GroupMessageQueue.QueueUrl
+      Events:
+        SendGroupMessageApi:
+          Type: Api
+          Properties:
+            Path: /send-group-message
+            Method: post
+
+  ProcessGroupMessageFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ProcessGroupMessagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt MessagesTable.Arn
+                  - !GetAtt GroupsTable.Arn
+                  - !GetAtt GroupMessageQueue.Arn
+                  - !GetAtt UsersTable.Arn
+
+  ProcessGroupMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref ProcessGroupMessageFunctionZipKey
+      Role: !GetAtt ProcessGroupMessageFunctionRole.Arn
+      Events:
+        GroupMessageQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt GroupMessageQueue.Arn
+
+  BlockUserFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BlockUserPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt BlocksTable.Arn
+                  - !GetAtt UsersTable.Arn
+
+  BlockUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref BlockUserFunctionZipKey
+      Role: !GetAtt BlockUserFunctionRole.Arn
+      Events:
+        BlockUserApi:
+          Type: Api
+          Properties:
+            Path: /block-user
+            Method: post
+
+  CreateGroupFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CreateGroupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt GroupsTable.Arn
+                  - !GetAtt UsersTable.Arn
+
+  CreateGroupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref CreateGroupFunctionZipKey
+      Role: !GetAtt CreateGroupFunctionRole.Arn
+      Events:
+        CreateGroupApi:
+          Type: Api
+          Properties:
+            Path: /create-group
+            Method: post
+
+  AddUserToGroupFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AddUserToGroupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt GroupsTable.Arn
+                  - !GetAtt UsersTable.Arn
+
+  AddUserToGroupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref AddUserToGroupFunctionZipKey
+      Role: !GetAtt AddUserToGroupFunctionRole.Arn
+      Events:
+        AddUserToGroupApi:
+          Type: Api
+          Properties:
+            Path: /add-user-to-group
+            Method: post
+
+  RemoveUserFromGroupFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RemoveUserFromGroupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt GroupsTable.Arn
+                  - !GetAtt UsersTable.Arn
+
+  RemoveUserFromGroupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref RemoveUserFromGroupFunctionZipKey
+      Role: !GetAtt RemoveUserFromGroupFunctionRole.Arn
+      Events:
+        RemoveUserFromGroupApi:
+          Type: Api
+          Properties:
+            Path: /remove-user-from-group
+            Method: post
+
+  GetAllMessagesFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GetAllMessagesPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:UpdateItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt MessagesTable.Arn
+                  - !GetAtt UsersTable.Arn
+
+  GetAllMessagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref GetAllMessagesFunctionZipKey
+      Role: !GetAtt GetAllMessagesFunctionRole.Arn
+      Events:
+        GetAllMessagesApi:
+          Type: Api
+          Properties:
+            Path: /get-all-messages
+            Method: get
+
+  GetNewMessagesFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GetNewMessagesPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:UpdateItem
+                Resource: 
+                  - "arn:aws:logs:*:*:*"
+                  - !GetAtt MessagesTable.Arn
+                  - !GetAtt UsersTable.Arn
+
+  GetNewMessagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 60
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref GetNewMessagesFunctionZipKey
+      Role: !GetAtt GetNewMessagesFunctionRole.Arn
+      Events:
+        GetNewMessagesApi:
+          Type: Api
+          Properties:
+            Path: /get-new-messages
+            Method: get
+
+Outputs:
+  UserMessageQueueUrl:
+    Value: !Ref UserMessageQueue
+    Description: "URL of the User Message SQS Queue"
+
+  GroupMessageQueueUrl:
+    Value: !Ref GroupMessageQueue
+    Description: "URL of the Group Message SQS Queue"
