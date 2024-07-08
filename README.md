@@ -29,7 +29,7 @@ The backend system leverages the following AWS services:
 
 ## Setup
 
-1. Deploy the CloudFormation stack:
+1. Deploy code and CloudFormation stack:
     ```bash
     python deploy.py
     ```
